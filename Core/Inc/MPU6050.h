@@ -54,6 +54,10 @@ typedef struct {
 void MPU_Init(void);
 void MPU_RegWrite(uint8_t reg, uint8_t value);
 uint8_t MPU_RegRead(uint8_t reg);
+
+HAL_StatusTypeDef MPU_StartRawDMA(void);
+uint8_t MPU_IsDataReady(void);
+
 void MPU_Raw(RAW_DATA *raw);
 void MPU_Convert(RAW_DATA *raw, ACT_DATA *data);
 

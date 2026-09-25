@@ -11,6 +11,10 @@
 
 extern I2C_HandleTypeDef hi2c1;
 
+static uint8_t mpu_rx_buffer[14];
+static volatile uint8_t mpu_data_ready = 0;
+static volatile uint8_t mpu_dma_error = 0;
+
 void MPU_Init(void){
 
  uint8_t onbus =0;
@@ -47,31 +51,63 @@ uint8_t MPU_RegRead(uint8_t reg){
 	return readvalue;
 }
 
-void MPU_Raw(RAW_DATA *raw){
+uint8_t MPU_IsDataReady(void)
+{
+    return mpu_data_ready;
+}
 
-	uint8_t buffer[14];
+void MPU_Raw(RAW_DATA *raw)
+{
+    raw->accX = (int16_t)((mpu_rx_buffer[0] << 8) |
+                           mpu_rx_buffer[1]);
 
-	//Reading Raw values from the MPU sensor
+    raw->accY = (int16_t)((mpu_rx_buffer[2] << 8) |
+                           mpu_rx_buffer[3]);
 
- HAL_StatusTypeDef status = HAL_I2C_Mem_Read(&hi2c1,MPU_ADDR, ACC_OUT,I2C_MEMADD_SIZE_8BIT, buffer, 14 , 100);
+    raw->accZ = (int16_t)((mpu_rx_buffer[4] << 8) |
+                           mpu_rx_buffer[5]);
 
- if (status != HAL_OK)
+    raw->gyroX = (int16_t)((mpu_rx_buffer[8] << 8) |
+                            mpu_rx_buffer[9]);
+
+    raw->gyroY = (int16_t)((mpu_rx_buffer[10] << 8) |
+                            mpu_rx_buffer[11]);
+
+    raw->gyroZ = (int16_t)((mpu_rx_buffer[12] << 8) |
+                            mpu_rx_buffer[13]);
+
+    mpu_data_ready = 0;  // consumed
+}
+
+HAL_StatusTypeDef MPU_StartRawDMA(void)
+{
+    if (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
     {
-	 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-        printf("I2C READ FAILED: %d\r\n", status);
-        return;
+        return HAL_BUSY;
     }
 
+    mpu_data_ready = 0;
 
- //Each values of ACC and GYro in 2 regs H and L
+    return HAL_I2C_Mem_Read_DMA(&hi2c1, MPU_ADDR, ACC_OUT, I2C_MEMADD_SIZE_8BIT, mpu_rx_buffer, 14);
+}
 
- 	raw->accX = (int16_t)((buffer[0] << 8) | buffer[1]);
-    raw->accY = (int16_t)((buffer[2] << 8) | buffer[3]);
-    raw->accZ = (int16_t)((buffer[4] << 8) | buffer[5]);
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c->Instance == I2C1)
+    {
+        mpu_data_ready = 1;
+    }
+}
 
-    raw->gyroX = (int16_t)((buffer[8] << 8) | buffer[9]);
-    raw->gyroY = (int16_t)((buffer[10] << 8) | buffer[11]);
-    raw->gyroZ = (int16_t)((buffer[12] << 8) | buffer[13]);
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c->Instance == I2C1)
+    {
+        mpu_dma_error = 1;
+        mpu_data_ready = 0;
+
+        MPU_StartRawDMA();  //So not to satll
+    }
 }
 
 void MPU_Convert(RAW_DATA *raw, ACT_DATA *data ){

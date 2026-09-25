@@ -46,6 +46,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+DMA_HandleTypeDef hdma_i2c1_rx;
 
 UART_HandleTypeDef huart2;
 
@@ -66,10 +67,13 @@ uint32_t previousTime;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
+
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -116,6 +120,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
@@ -129,6 +134,8 @@ int main(void)
 
   previousTime = HAL_GetTick();
 
+  MPU_StartRawDMA();   // kick off the first DMA transfer
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -139,20 +146,23 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-  MPU_Raw(&raw);
-  MPU_Convert( &raw, &data);
+  if (MPU_IsDataReady())
+  {
+    MPU_Raw(&raw);
+    MPU_Convert(&raw, &data);
+    MPU_StartRawDMA();   // re-arm for next sample
 
-  	   printf("ACC: X=%.2f Y=%.2f Z=%.2f g \n",
-              data.accX,
-              data.accY,
-              data.accZ);
-  	   printf("\n");
+    printf("ACC: X=%.2f Y=%.2f Z=%.2f g \n",
+           data.accX,
+           data.accY,
+           data.accZ);
+    printf("\n");
 
-       printf("GYRO: X=%.2f Y=%.2f Z=%.2f dps \n",
-              data.gyroX,
-              data.gyroY,
-              data.gyroZ);
-       printf("\n");
+    printf("GYRO: X=%.2f Y=%.2f Z=%.2f dps \n",
+           data.gyroX,
+           data.gyroY,
+           data.gyroZ);
+    printf("\n");
 
     uint32_t currentTime = HAL_GetTick();
     float dt = (currentTime - previousTime) / 1000.0f;
@@ -163,38 +173,18 @@ int main(void)
 
     //ACC angle
 
-    rollAcc =
-        atan2f(
-            data.accY,
-            data.accZ
-        ) * 57.2957795f;
+    rollAcc = atan2f(data.accY,data.accZ) * 57.2957795f;
 
 
     pitchAcc =
-        atan2f(
-            -data.accX,
-            sqrtf(
-                data.accY * data.accY +
-                data.accZ * data.accZ
-            )
-        ) * 57.2957795f;
+        atan2f( -data.accX,sqrtf((data.accY * data.accY) + (data.accZ * data.accZ))) * 57.2957795f;
 
     //Kalman Rollandpitch
 
-    roll = Kalman_Update(
-        &kalmanRoll,
-        rollAcc,
-        data.gyroX,
-        dt
-    );
+    roll = Kalman_Update(&kalmanRoll, rollAcc, data.gyroX, dt );
 
 
-    pitch = Kalman_Update(
-        &kalmanPitch,
-        pitchAcc,
-        data.gyroY,
-        dt
-    );
+    pitch = Kalman_Update(&kalmanPitch, pitchAcc, data.gyroY, dt);
 
     //Printf
 
@@ -211,8 +201,7 @@ int main(void)
            yaw);
 
     printf("\n");
-
-  HAL_Delay(10);
+  }
 
   }
   /* USER CODE END 3 */
@@ -293,6 +282,32 @@ static void MX_I2C1_Init(void)
   }
   /* USER CODE BEGIN I2C1_Init 2 */
 
+  /* --- DMA RX stream config for I2C1 --- */
+  hdma_i2c1_rx.Instance = DMA1_Stream0;
+  hdma_i2c1_rx.Init.Channel = DMA_CHANNEL_1;
+  hdma_i2c1_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+  hdma_i2c1_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+  hdma_i2c1_rx.Init.MemInc = DMA_MINC_ENABLE;
+  hdma_i2c1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+  hdma_i2c1_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+  hdma_i2c1_rx.Init.Mode = DMA_NORMAL;
+  hdma_i2c1_rx.Init.Priority = DMA_PRIORITY_LOW;
+  hdma_i2c1_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+
+  if (HAL_DMA_Init(&hdma_i2c1_rx) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  __HAL_LINKDMA(&hi2c1, hdmarx, hdma_i2c1_rx);
+
+  /* --- I2C1 event/error NVIC (required for DMA completion callback) --- */
+  HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+
+  HAL_NVIC_SetPriority(I2C1_ER_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
+
   /* USER CODE END I2C1_Init 2 */
 
 }
@@ -327,6 +342,22 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
 
 }
 
