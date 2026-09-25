@@ -10,6 +10,8 @@
 *.su
 *.i
 *.ld
+*.cfg
+*.launch
 
 sysmem.c
 syscalls.c 
